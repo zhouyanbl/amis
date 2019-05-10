@@ -56,3 +56,8 @@ npm run coverage
 ## 讨论
 
 欢迎提 ISSUE 讨论。
+
+
+解压后 通过修改 amis-master/examples/components/App.jsx 编辑需要的页面list
+
+
