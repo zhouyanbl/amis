@@ -58,7 +58,7 @@ npm run coverage
 欢迎提 ISSUE 讨论。
 
 ## 使用配置
-* 解压后 通过修改 amis-master/examples/components/App.jsx 编辑需要的页面list
+* 解压后 cd到解压后的文件夹运行 npm i 通过修改 amis-master/examples/components/App.jsx 编辑需要的页面list
 * 然后运行npm run dev编译
 * 然后npm start启动
 
