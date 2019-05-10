@@ -59,5 +59,7 @@ npm run coverage
 
 
 解压后 通过修改 amis-master/examples/components/App.jsx 编辑需要的页面list
+然后运行npm run dev编译
+然后npm start启动
 
 
