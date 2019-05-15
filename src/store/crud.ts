@@ -9,7 +9,7 @@ import {
     IRendererStore
 } from './index';
 import { ServiceStore } from './service';
-import { extendObject, createObject, isObjectShallowModified } from '../utils/helper';
+import { extendObject, createObject, isObjectShallowModified, sortArray } from '../utils/helper';
 import {
     Api,
     Payload,
@@ -18,6 +18,7 @@ import {
 } from '../types';
 import * as qs from 'qs';
 import pick = require("lodash/pick");
+import { resolveVariableAndFilter } from '../utils/tpl-builtin';
 
 
 class ServerError extends Error {
@@ -31,9 +32,8 @@ export const CRUDStore = ServiceStore
         query: types.optional(types.frozen(), {}),
         prevPage: 1,
         page: 1,
-        pageNum: types.optional(types.union(types.number, types.literal('')), 1),
         perPage: 10,
-        total: 1,
+        total: 0,
         mode: 'normal',
         hasNext: false,
         selectedAction: types.frozen(),
@@ -46,7 +46,7 @@ export const CRUDStore = ServiceStore
     })
     .views(self => ({
         get lastPage() {
-            return Math.ceil(self.total / (self.perPage < 1 ? 10 : self.perPage));
+            return Math.max(Math.ceil(self.total / (self.perPage < 1 ? 10 : self.perPage)), 1);
         },
 
         get filterData() {
@@ -89,7 +89,7 @@ export const CRUDStore = ServiceStore
             };
 
             if (self.query[pageField || 'page']) {
-                self.page = self.pageNum = parseInt(self.query[pageField || 'page'], 10);
+                self.page = parseInt(self.query[pageField || 'page'], 10);
             }
 
             if (self.query[perPageField || 'perPage']) {
@@ -101,30 +101,62 @@ export const CRUDStore = ServiceStore
 
         
         const fetchInitData:(api:Api, data?:object, options?:fetchOptions & {
+            forceReload?: boolean;
+            loadDataOnce?: boolean; // 配置数据是否一次性加载，如果是这样，由前端来完成分页，排序等功能。
+            source?: string; // 支持自定义属于映射，默认不配置，读取 rows 或者 items
             loadDataMode?: boolean;
             syncResponse2Query?: boolean;
-        }) => Promise<any> = flow(function *getInitData(api:string, data:object, options?:fetchOptions) {
+        }) => Promise<any> = flow(function *getInitData(api:string, data:object, options:fetchOptions & {
+            forceReload?: boolean;
+            loadDataOnce?: boolean; // 配置数据是否一次性加载，如果是这样，由前端来完成分页，排序等功能。
+            source?: string; // 支持自定义属于映射，默认不配置，读取 rows 或者 items
+            loadDataMode?: boolean;
+            syncResponse2Query?: boolean;
+        } = {}) {
             try {
+                if (options.forceReload === false && options.loadDataOnce && self.total) {
+                    let items = self.items.concat();
+
+                    if (self.query.orderBy) {
+                        const dir = /desc/i.test(self.query.orderDir) ? -1 : 1;
+                        items = sortArray(items, self.query.orderBy, dir);
+                    }
+
+                    const data = {
+                        ...self.data,
+                        items: items.slice((self.page - 1) * self.perPage, self.page * self.perPage)
+                    }
+                    self.reInitData(data);
+                    return;
+                }
+
                 if (fetchCancel) {
                     fetchCancel();
                     fetchCancel = null;
                     self.fetching = false;
                 }
 
-                options && options.silent || self.markFetching(true);
-                const json:Payload = yield (getRoot(self) as IRendererStore).fetcher(api, createObject(self.data, {
+                options.silent || self.markFetching(true);
+                const ctx:any = createObject(self.data, {
                     ...self.query,
-                    [options && options.pageField || 'page']: self.page,
-                    [options && options.perPageField || 'perPage']: self.perPage,
+                    [options.pageField || 'page']: self.page,
+                    [options.perPageField || 'perPage']: self.perPage,
                     ...data
-                }), {
+                });
+                
+                // 一次性加载不要发送 perPage 属性
+                if (options.loadDataOnce) {
+                    delete ctx[options.perPageField || 'perPage'];
+                }
+
+                const json:Payload = yield (getRoot(self) as IRendererStore).fetcher(api, ctx, {
                     ...options,
                     cancelExecutor: (executor:Function) => fetchCancel = executor
                 });
                 fetchCancel = null;
 
                 if (!json.ok) {
-                    self.updateMessage(json.msg || options && options.errorMessage || '获取失败', true);
+                    self.updateMessage(json.msg || options.errorMessage || '获取失败', true);
                     (getRoot(self) as IRendererStore).notify('error', json.msg);
                 } else {
                     if (!json.data) {
@@ -132,66 +164,80 @@ export const CRUDStore = ServiceStore
                     }
 
                     self.updatedAt = Date.now();
-                    if (Array.isArray(json.data)) {
-                        self.reInitData({
-                            ...self.pristine,
-                            items: json.data
-                        });
-                    } else {
-                        const {
-                            items,
-                            rows,
-                            total,
-                            count,
-                            page,
-                            hasNext,
-                            ...rest
-                        } = json.data as any;
+                    let result = json.data;
 
-                        if (!Array.isArray(items) && !Array.isArray(rows)) {
-                            throw new Error('返回数据格式不正确，payload.data.items 必须是数组');
-                        }
-
-                        // 点击加载更多数据
-                        let rowsData = []
-                        if (options && options.loadDataMode && Array.isArray(self.data.items)) {
-                            rowsData = self.data.items;
-                            rowsData.push(...(items || rows));
-                        } else { // 第一次的时候就是直接加载请求的数据
-                            rowsData = items || rows;
-                        }
-
-                        const data = {
-                            ...self.pristine,
-                            items: rowsData,
-                            count: count,
-                            total: total,
-                            ...rest
+                    if (Array.isArray(result)) {
+                        result = {
+                            items: result
                         };
-
-                        if (Array.isArray(data.items)) {
-                            data.items = data.items.map((item:any) => typeof item === 'string' ? {text: item} : item)
-                        }
-
-                        self.items.replace(data.items);
-                        self.reInitData(data);
-                        options && options.syncResponse2Query !== false && updateQuery(pick(rest, Object.keys(self.query)), undefined, options && options.pageField || 'page', options && options.perPageField || 'perPage');
-
-                        self.total = parseInt(total || count, 10) || 0;
-                        typeof page !== 'undefined' && (self.page = self.pageNum = parseInt(page, 10));
-
-                        // 分页情况不清楚，只能知道有没有下一页。
-                        if (typeof hasNext !== 'undefined') {
-                            self.mode = 'simple';
-                            self.total = 0;
-                            self.hasNext = !!hasNext;
-                        }
                     }
 
-                    self.updateMessage(json.msg || options && options.successMessage);
+                    const {
+                        total,
+                        count,
+                        page,
+                        hasNext,
+                        ...rest
+                    } = result;
+
+                    let items:Array<any>;
+                    if (options.source) {
+                        items = resolveVariableAndFilter(options.source, createObject(self.filterData, result), '| raw');
+                    } else {
+                        items = result.items || result.rows;
+                    }
+
+                    if (!Array.isArray(items)) {
+                        throw new Error('返回数据格式不正确，payload.data.items 必须是数组');
+                    } else {
+                        // 确保成员是对象。
+                        items.map((item:any) => typeof item === 'string' ? {text: item} : item);
+                    }
+
+                    // 点击加载更多数据
+                    let rowsData = []
+                    if (options.loadDataMode && Array.isArray(self.data.items)) {
+                        rowsData = self.data.items.concat(items);
+                    } else { 
+                        // 第一次的时候就是直接加载请求的数据
+                        rowsData = items;
+                    }
+
+                    const data = {
+                        ...self.pristine,
+                        items: rowsData,
+                        count: count,
+                        total: total,
+                        ...rest
+                    };
+
+                    if (options.loadDataOnce) {
+                        if (self.query.orderBy) {
+                            const dir = /desc/i.test(self.query.orderDir) ? -1 : 1;
+                            rowsData = sortArray(rowsData, self.query.orderBy, dir);
+                        }
+                        data.items = rowsData.slice((self.page - 1) * self.perPage, self.page * self.perPage);
+                        data.count = data.total = rowsData.length;
+                    }
+
+                    self.items.replace(rowsData);
+                    self.reInitData(data);
+                    options.syncResponse2Query !== false && updateQuery(pick(rest, Object.keys(self.query)), undefined, options.pageField || 'page', options.perPageField || 'perPage');
+
+                    self.total = parseInt(data.total || data.count, 10) || 0;
+                    typeof page !== 'undefined' && (self.page = parseInt(page, 10));
+
+                    // 分页情况不清楚，只能知道有没有下一页。
+                    if (typeof hasNext !== 'undefined') {
+                        self.mode = 'simple';
+                        self.total = 0;
+                        self.hasNext = !!hasNext;
+                    }
+
+                    self.updateMessage(json.msg || options.successMessage);
 
                     // 配置了获取成功提示后提示，默认是空不会提示。
-                    if (options && options.successMessage) {
+                    if (options.successMessage) {
                         (getRoot(self) as IRendererStore).notify('success', self.msg);
                     }
                 }
@@ -218,12 +264,8 @@ export const CRUDStore = ServiceStore
         });
 
         function changePage(page:number, perPage?: number) {
-            self.page = self.pageNum = page;
+            self.page = page;
             perPage && (self.perPage = perPage);
-        }
-
-        function changePageNum(value: number | '') {
-            self.pageNum = value;
         }
 
         function selectAction(action:Action) {
@@ -242,7 +284,7 @@ export const CRUDStore = ServiceStore
                 self.markSaving(false);
 
                 if (!json.ok) {
-                    self.updateMessage(json.msg || options && options.errorMessage || '保存失败', true);
+                    self.updateMessage(json.msg || options.errorMessage || '保存失败', true);
                     (getRoot(self) as IRendererStore).notify('error', self.msg);
                     throw new ServerError(self.msg);
                 } else {
@@ -250,7 +292,7 @@ export const CRUDStore = ServiceStore
                         __saved: Date.now()
                     });
                     self.updatedAt = Date.now();
-                    self.updateMessage(json.msg || options && options.successMessage || '保存成功');
+                    self.updateMessage(json.msg || options.successMessage || '保存成功');
                     (getRoot(self) as IRendererStore).notify('success', self.msg);
                 }
                 return json.data;
@@ -288,7 +330,6 @@ export const CRUDStore = ServiceStore
             updateQuery,
             fetchInitData,
             changePage,
-            changePageNum,
             selectAction,
             saveRemote,
             setFilterTogglable,

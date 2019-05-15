@@ -1,9 +1,11 @@
 /**
  * @file fis-conf.js 配置
  */
+const path = require('path');
 const parserMarkdown = require('./build/md-parser');
 fis.get('project.ignore').push(
     'public/**',
+    'gh-pages/**',
     '.*/**'
 );
 
@@ -36,7 +38,22 @@ fis.match('/node_modules/**.js', {
 
 fis.match('/docs/**.md', {
     rExt: 'js',
-    parser: parserMarkdown,
+    parser: [parserMarkdown, function(contents, file) {
+        return contents.replace(/\bhref=\\('|")(.+?)\\\1/g, function(_, quota, link) {
+            if (/\.md($|#)/.test(link)) {
+                let parts = link.split('#');
+                parts[0] = parts[0].replace('.md', '');
+
+                if (parts[0][0] !== '/') {
+                    parts[0] = path.resolve(path.dirname(file.subpath), parts[0]);
+                }
+
+                return 'href=\\' + quota + parts.join('#') + '\\' + quota;
+            }
+
+            return _;
+        });
+    }],
     isMod: true
 });
 
@@ -209,4 +226,154 @@ if (fis.project.currentMedia() === 'publish') {
     });
     // publishEnv.unhook('node_modules');
     publishEnv.hook('relative');
+} else if (fis.project.currentMedia() === 'gh-pages') {
+    const ghPages = fis.media('gh-pages');
+
+    ghPages.match('/docs/**.md', {
+        rExt: 'js',
+        parser: [parserMarkdown, function(contents, file) {
+            return contents.replace(/\bhref=\\('|")(.+?)\\\1/g, function(_, quota, link) {
+                if (/\.md($|#)/.test(link)) {
+                    let parts = link.split('#');
+                    parts[0] = parts[0].replace('.md', '');
+    
+                    if (parts[0][0] !== '/') {
+                        parts[0] = path.resolve(path.dirname(file.subpath), parts[0]);
+                    }
+    
+                    return 'href=\\' + quota + '#' + parts.join('#') + '\\' + quota;
+                }
+    
+                return _;
+            });
+        }],
+        isMod: true
+    });
+
+    ghPages.match('/node_modules/(**)', {
+        release: '/n/$1'
+    });
+
+    ghPages.match('/examples/(**)', {
+        release: '/$1'
+    });
+
+    ghPages.match('/{examples,docs}/**', {
+        preprocessor: function(contents, file) {
+            if (!file.isText() || typeof contents !== 'string') {
+                return contents;
+            }
+
+            return contents
+                .replace(/(\\?(?:'|"))((?:get|post|delete|put)\:)?\/api\/mock2?/ig, function(_, qutoa, method) {
+                    return qutoa + (method || '') +  'https://houtai.baidu.com/api/mock2';
+                })
+                .replace(/(\\?(?:'|"))((?:get|post|delete|put)\:)?\/api\/sample/ig, function(_, qutoa, method) {
+                    return qutoa + (method || '') +  'https://houtai.baidu.com/api/sample';
+                });
+        }
+    })
+    
+    ghPages.match('mock/**.{json,js,conf}', {
+        release: false
+    });
+    
+    ghPages.match('::package', {
+        packager: fis.plugin('deps-pack', {
+            'pkg/npm.js': [
+                '/examples/mod.js',
+                'node_modules/**.js',
+                '!monaco-editor/**',
+                '!flv.js/**',
+                '!hls.js/**',
+                '!amis/lib/editor/**',
+                '!froala-editor/**',
+                '!amis/lib/components/RichText.js',
+                '!jquery/**',
+                '!zrender/**',
+                '!echarts/**',
+            ],
+            'pkg/rich-text.js': [
+                'amis/lib/components/RichText.js',
+                'froala-editor/**',
+                'jquery/**'
+            ],
+            'pkg/echarts.js': [
+                'zrender/**',
+                'echarts/**'
+            ],
+            'pkg/api-mock.js': [
+                'mock/*.ts'
+            ],
+            'pkg/app.js': [
+                '/examples/components/App.jsx',
+                '/examples/components/App.jsx:deps'
+            ],
+            'pkg/rest.js': [
+                '**.{js,jsx,ts,tsx}',
+                '!static/mod.js',
+                '!monaco-editor/**',
+                '!echarts/**',
+                '!flv.js/**',
+                '!hls.js/**',
+                '!froala-editor/**',
+                '!jquery/**',
+                '!amis/lib/components/RichText.js',
+                '!zrender/**',
+                '!echarts/**',
+            ],
+            // css 打包
+            'pkg/style.css': [
+                'node_modules/*/**.css',
+                '*.scss',
+                '!/scss/*.scss',
+                '/scss/*.scss',
+                '!monaco-editor/**',
+            ]
+        })
+    });
+    
+    ghPages.match('*.{css,less,scss}', {
+        optimizer: fis.plugin('clean-css'),
+        useHash: true
+    });
+    
+    ghPages.match('::image', {
+        useHash: true
+    });
+    
+    ghPages.match('*.{js,ts,tsx,jsx}', {
+        optimizer: fis.plugin('uglify-js'),
+        useHash: true
+    });
+    
+    ghPages.match('*.map', {
+        release: false,
+        url: 'null',
+        useHash: false
+    });
+    ghPages.match('{*.jsx,*.tsx,*.ts}', {
+        moduleId: function (m, path) {
+            return fis.util.md5('amis' + path);
+        },
+        parser: fis.plugin('typescript', {
+            sourceMap: false,
+            importHelpers: true
+        })
+    });
+    ghPages.match('*', {
+        domain: '/amis',
+        deploy: [
+            fis.plugin('skip-packed'),
+            fis.plugin('local-deliver', {
+                to: './gh-pages'
+            })
+        ]
+    });
+    ghPages.match('{*.min.js,monaco-editor/**.js}', {
+        optimizer: null
+    });
+    ghPages.match('monaco-editor/**', {
+        useHash: false
+    });
 }

@@ -45,7 +45,7 @@ interface CRUDProps extends RendererProps {
     quickSaveApi?: Api;
     quickSaveItemApi?: Api;
     initFetch?: boolean;
-    pagePageAvailable?: Array<number | string>;
+    perPageAvailable?: Array<number | string>;
     messages: {
         fetchFailed?: string;
         fetchSuccess?: string;
@@ -65,6 +65,8 @@ interface CRUDProps extends RendererProps {
     filterDefaultVisible?: boolean;
     syncResponse2Query?: boolean;
     keepItemSelectionOnPageChange?: boolean;
+    loadDataOnce?: boolean;
+    source?: string;
 }
 
 export default class CRUD extends React.Component<CRUDProps, any> {
@@ -83,7 +85,7 @@ export default class CRUD extends React.Component<CRUDProps, any> {
         'valueField',
         'defaultParams',
         'bodyClassName',
-        'pagePageAvailable',
+        'perPageAvailable',
         'pageField',
         'perPageField',
         'hideQuickSaveBtn',
@@ -108,6 +110,8 @@ export default class CRUD extends React.Component<CRUDProps, any> {
         'keepItemSelectionOnPageChange',
         'labelTpl',
         'labelField',
+        'loadDataOnce',
+        'source'
     ];
     static defaultProps: Partial<CRUDProps> = {
         toolbarInline: true,
@@ -122,12 +126,13 @@ export default class CRUD extends React.Component<CRUDProps, any> {
         silentPolling: false,
         filterTogglable: false,
         filterDefaultVisible: true,
+        loadDataOnce: false,
     };
 
     control: any;
     lastQuery: any;
     dataInvalid: boolean = false;
-    timer: NodeJS.Timer;
+    timer: number;
     mounted: boolean;
     constructor(props: CRUDProps) {
         super(props);
@@ -156,7 +161,7 @@ export default class CRUD extends React.Component<CRUDProps, any> {
     }
 
     componentWillMount() {
-        const {location, store, pageField, perPageField, syncLocation} = this.props;
+        const {location, store, pageField, perPageField, syncLocation, loadDataOnce} = this.props;
 
         this.mounted = true;
 
@@ -514,7 +519,7 @@ export default class CRUD extends React.Component<CRUDProps, any> {
         });
     }
 
-    search(values?: any, silent?: boolean, clearSelection?: boolean) {
+    search(values?: any, silent?: boolean, clearSelection?: boolean, forceReload = true) {
         const {
             store,
             api,
@@ -530,6 +535,8 @@ export default class CRUD extends React.Component<CRUDProps, any> {
             keepItemSelectionOnPageChange,
             pickerMode,
             env,
+            loadDataOnce,
+            source
         } = this.props;
 
         // reload 需要清空用户选择。
@@ -561,6 +568,9 @@ export default class CRUD extends React.Component<CRUDProps, any> {
                     successMessage: messages && messages.fetchSuccess,
                     errorMessage: messages && messages.fetchFailed,
                     autoAppend: true,
+                    forceReload,
+                    loadDataOnce,
+                    source,
                     silent,
                     pageField,
                     perPageField,
@@ -604,7 +614,7 @@ export default class CRUD extends React.Component<CRUDProps, any> {
             pageField,
             perPageField
         );
-        this.search();
+        this.search(undefined, undefined, undefined, false);
 
         if (autoJumpToTopOnPagerChange && this.control) {
             (findDOMNode(this.control) as HTMLElement).scrollIntoView();
@@ -819,7 +829,7 @@ export default class CRUD extends React.Component<CRUDProps, any> {
             pageField,
             perPageField
         );
-        this.search();
+        this.search(undefined, undefined, undefined, false);
     }
 
     reload(subpath?: string, query?: any) {
@@ -1015,9 +1025,7 @@ export default class CRUD extends React.Component<CRUDProps, any> {
                         items: lastPage,
                         hasNext: store.hasNext,
                         mode: store.mode,
-                        onPageChange: this.handleChangePage,
-                        pageNum: store.pageNum,
-                        changePageNum: store.changePageNum,
+                        onPageChange: this.handleChangePage
                     }
                 )}
             </div>
@@ -1037,7 +1045,7 @@ export default class CRUD extends React.Component<CRUDProps, any> {
     }
 
     renderSwitchPerPage(childProps: any) {
-        const {store, pagePageAvailable, classnames: cx, classPrefix: ns} = this.props;
+        const {store, perPageAvailable, classnames: cx, classPrefix: ns} = this.props;
 
         const items = childProps.items;
 
@@ -1045,7 +1053,7 @@ export default class CRUD extends React.Component<CRUDProps, any> {
             return null;
         }
 
-        const perPages = (pagePageAvailable || [5, 10, 20, 50, 100]).map((item: any) => ({
+        const perPages = (perPageAvailable || [5, 10, 20, 50, 100]).map((item: any) => ({
             label: item,
             value: item + '',
         }));
